@@ -5,6 +5,7 @@ use sdl2::pixels::Color;
 use sdl2::rect::Rect;
 use sdl2::render::Canvas;
 use sdl2::video::Window;
+use std::time::{Instant, Duration};
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
@@ -21,6 +22,7 @@ struct Point {
 enum GameState {
     Playing,
     Paused,
+    Lost,
 }
 
 #[derive(PartialEq)]
@@ -31,17 +33,75 @@ enum PlayerDirection {
     Left,
 }
 
+impl PlayerDirection {
+    fn opposite(&self) -> PlayerDirection {
+        match self {
+            PlayerDirection::Up => PlayerDirection::Down,
+            PlayerDirection::Down => PlayerDirection::Up,
+            PlayerDirection::Left => PlayerDirection::Right,
+            PlayerDirection::Right => PlayerDirection::Left,
+        }
+    }
+}
+
 struct GameContext {
     state: GameState,
     food_index: Food,
+    player: PlayerObject,
+}
+
+impl GameContext {
+    fn restart(&mut self) {
+        self.food_index = generate_food();
+        self.state = GameState::Playing;
+        self.player = PlayerObject::new();
+    }
 }
 
 struct PlayerObject {
     player_position: Vec<Point>,
     player_direction: PlayerDirection,
+    prev_direction: PlayerDirection,
 }
 
 impl PlayerObject {
+    fn new() -> Self {
+        let mut rng = rand::thread_rng();
+        let point_x = rng.gen_range(3..=GRID_X - 4);
+        let point_y = rng.gen_range(3..=GRID_Y - 4);
+        PlayerObject {
+            player_direction: PlayerDirection::Down,
+            player_position: vec![
+                Point {
+                    x: point_x,
+                    y: point_y,
+                },
+                Point {
+                    x: point_x + 1,
+                    y: point_y,
+                },
+            ],
+            prev_direction: PlayerDirection::Down,
+        }
+    }
+
+    fn change_direction(&mut self, new_direction: PlayerDirection) {
+        if new_direction != self.prev_direction.opposite() {
+            self.player_direction = new_direction;
+        }
+    }
+
+    fn check_collision(&self)-> bool{
+        let head = &self.player_position[0];
+        for i in 1..self.player_position.len() {
+            if self.player_position[i].x == head.x && self.player_position[i].y == head.y {
+                return true;
+            }
+        }
+    
+        false
+    }
+
     fn add_tail(&mut self) {
         let tail = &self.player_position[self.player_position.len() - 1];
 
@@ -49,15 +109,12 @@ impl PlayerObject {
         let mut y = tail.y;
 
         match self.player_direction {
-            PlayerDirection::Down => y-=1,
-            PlayerDirection::Up => y+=1,
-            PlayerDirection::Left => x+=1,
-            PlayerDirection::Right => x-=1,
+            PlayerDirection::Down => y -= 1,
+            PlayerDirection::Up => y += 1,
+            PlayerDirection::Left => x += 1,
+            PlayerDirection::Right => x -= 1,
         }
-        self.player_position.push(Point {
-            x: x,
-            y: y,
-        });
+        self.player_position.push(Point { x: x, y: y });
     }
 }
 
@@ -81,7 +138,7 @@ fn main() {
     let video_subsystem = sdl_context.video().unwrap();
 
     let window = video_subsystem
-        .window("Demo", WIDTH, HEIGHT)
+        .window("Snake Game", WIDTH, HEIGHT)
         .position_centered()
         .build()
         .unwrap();
@@ -94,23 +151,22 @@ fn main() {
 
     initialize_points(&mut points);
 
-    //Game Context
-    let mut player = PlayerObject {
-        player_direction: PlayerDirection::Down,
-        player_position: vec![Point { x: 5, y: 5 }, Point { x: 4, y: 5 }],
-    };
-
     let mut game = GameContext {
         state: GameState::Playing,
         food_index: generate_food(),
+        player: PlayerObject::new(),
     };
 
-    let mut i = 0;
+    let mut last_update_time = Instant::now();
+    let update_interval = Duration::from_millis(100);
 
     'running: loop {
-        if game.food_index.collides_with_player(&player) {
-            game.food_index = generate_food();
-            player.add_tail();
+        let current_time = Instant::now();
+        let elapsed_time = current_time.duration_since(last_update_time);
+
+        if elapsed_time >= update_interval {
+            last_update_time = current_time;
+            update_game_logic(&mut game);
         }
 
         canvas.set_draw_color(Color::RGB(0, 0, 0));
@@ -126,11 +182,7 @@ fn main() {
             ))
             .unwrap();
 
-        i += 1;
 
-        if i % 20 == 0 {
-            player_movement(&mut player);
-        }
         canvas.set_draw_color(Color::RGB(255, 255, 255));
         for point in &points {
             canvas
@@ -143,7 +195,7 @@ fn main() {
                 .unwrap();
         }
 
-        draw_grid(&player, &mut canvas);
+        draw_grid(&game.player, &mut canvas);
 
         for event in event_pump.poll_iter() {
             match event {
@@ -157,23 +209,23 @@ fn main() {
                     ..
                 } => match keycode {
                     Keycode::Up => {
-                        if player.player_direction != PlayerDirection::Down {
-                            player.player_direction = PlayerDirection::Up;
+                        if game.player.player_direction != PlayerDirection::Down {
+                            game.player.player_direction = PlayerDirection::Up;
                         }
                     }
                     Keycode::Down => {
-                        if player.player_direction != PlayerDirection::Up {
-                            player.player_direction = PlayerDirection::Down
+                        if game.player.player_direction != PlayerDirection::Up {
+                            game.player.player_direction = PlayerDirection::Down
                         }
                     }
                     Keycode::Left => {
-                        if player.player_direction != PlayerDirection::Right {
-                            player.player_direction = PlayerDirection::Left
+                        if game.player.player_direction != PlayerDirection::Right {
+                            game.player.player_direction = PlayerDirection::Left
                         }
                     }
                     Keycode::Right => {
-                        if player.player_direction != PlayerDirection::Left {
-                            player.player_direction = PlayerDirection::Right
+                        if game.player.player_direction != PlayerDirection::Left {
+                            game.player.player_direction = PlayerDirection::Right
                         }
                     }
                     _ => {}
@@ -186,12 +238,26 @@ fn main() {
     }
 }
 
+fn update_game_logic(game: &mut GameContext) {
+    // Update the game logic, e.g., check for collisions and move the player
+    if game.food_index.collides_with_player(&game.player) {
+        game.food_index = generate_food();
+        game.player.add_tail();
+    }
+
+    if game.player.check_collision() {
+        game.restart();
+    }
+
+    player_movement(&mut game.player);
+}
+
 fn generate_food() -> Food {
     let mut rng = rand::thread_rng();
     return Food {
         location: Point {
-            x: rng.gen_range(0..=GRID_X-1),
-            y: rng.gen_range(0..=GRID_Y-1),
+            x: rng.gen_range(0..=GRID_X - 1),
+            y: rng.gen_range(0..=GRID_Y - 1),
         },
     };
 }
